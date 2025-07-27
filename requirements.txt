@@ -1,0 +1,9 @@
+torch==2.2.1 #--index-url https://download.pytorch.org/whl/cu118  # or cpu
+transformers==4.38.2
+sentence-transformers==2.7.0
+langchain==0.1.13
+faiss-cpu==1.8.0  # or faiss-gpu
+rank-bm25==0.2.2
+pypdf==4.1.0
+tqdm==4.66.2
+PyPDF2
