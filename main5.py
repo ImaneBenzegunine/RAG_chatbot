@@ -136,8 +136,7 @@ class TuberculosisChatbot:
         } for idx, score in combined_results[:k]]
 
     def generate_response(self, query: str, context: str) -> str:
-        prompt = f"""Generate a comprehensive answer about tuberculosis based on the provided context, with detailed information and references to the sources, in 3-5 complete sentences.
-
+        prompt = f"""Generate a comprehensive answer about tuberculosis based on the provided context, with detailed information and references to the sources, in 3-5 complete sentences. 
                 Context:
                 {context}
 
