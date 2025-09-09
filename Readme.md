@@ -6,7 +6,7 @@
 ![Transformers](https://img.shields.io/badge/🤗%20Transformers-LLM%20Integration-yellow)
 
 An advanced Retrieval-Augmented Generation (RAG) system that transforms PDF documents into intelligent, queryable knowledge bases using state-of-the-art AI technologies.
-
+![alt text](image.png)
 
 ## Key Features
 
