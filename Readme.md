@@ -18,7 +18,7 @@ An advanced Retrieval-Augmented Generation (RAG) system that transforms PDF docu
 
 ## Architecture
 
-![alt text](Flowchart.jpg)
+![rag chatbot](https://github.com/user-attachments/assets/e7cbbc0a-75e7-420e-bcc5-0043500f6a2d)
 
 
 ## Tech Stack
