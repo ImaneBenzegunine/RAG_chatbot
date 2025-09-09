@@ -7,3 +7,7 @@ rank-bm25==0.2.2
 pypdf==4.1.0
 tqdm==4.66.2
 PyPDF2
+
+flask 
+numpy
+flask_cors==6.0.1

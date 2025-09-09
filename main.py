@@ -10,6 +10,9 @@ import pickle
 from pathlib import Path
 import faiss
 from time import time
+from flask import Flask, render_template, request, jsonify
+import threading
+import traceback
 
 class TuberculosisChatbot:
     def __init__(self):
@@ -29,7 +32,6 @@ class TuberculosisChatbot:
         self.llm = pipeline(
             "text2text-generation",
             model="google/flan-t5-large",
-            #model="google/flan-t5-base",
             device=self.device,
             torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
         )
@@ -39,7 +41,6 @@ class TuberculosisChatbot:
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=800,
             chunk_overlap=150,
-
             separators=["\n\n", "\n", ".", "?", "!", " ", ""]
         )
         
@@ -110,7 +111,7 @@ class TuberculosisChatbot:
         
         print(f"Processed {len(self.corpus)} chunks in {time()-start_time:.2f} seconds")
 
-    def retrieve_relevant_chunks(self, query: str, k: int = 5) -> list:  # Increased from 3 to 5
+    def retrieve_relevant_chunks(self, query: str, k: int = 5) -> list:
         """Retrieve relevant document chunks with improved scoring"""
         # Semantic search
         query_embedding = self.embedder.encode(query).astype('float32').reshape(1, -1)
@@ -122,7 +123,7 @@ class TuberculosisChatbot:
         # Combine scores with better weighting
         combined_results = []
         for idx in indices[0]:
-            if idx < 0:
+            if idx < 0 or idx >= len(self.corpus):
                 continue
             semantic_score = distances[0][np.where(indices[0] == idx)[0][0]]
             keyword_score = bm25_scores[idx]
@@ -149,114 +150,171 @@ class TuberculosisChatbot:
         context = self._clean_context(context)
         
         # Create focused prompt
-        prompt = f"""Question: {query}
+        prompt = f"""Based on the following context about tuberculosis, answer this question: {query}
 
-        Relevant Context:
-        {context[:2000]}  
+Context: {context[:2000]}
 
-        Instructions:
-        - Write a detailed answer in at least 3 sentences and more than 50 words.
-        - Use ONLY the provided context.
-        - Include important facts, numbers, or examples if present.
-        - Write in clear, well-structured paragraphs.
+Answer the question clearly and accurately using only the provided context. Provide a detailed response with important facts if available."""
 
-
-        Answer:"""
-            
         try:
-                response = self.llm(
-                    prompt,
-                    max_new_tokens=512,
-                    min_new_tokens=80,   # ensures at least ~80 tokens (~50–60 words)
-                    num_beams=5,
-                    do_sample=True,      # allow more natural generation
-                    temperature=0.7,      # less robotic
-                    no_repeat_ngram_size=3
-                    #do_sample=False  # More deterministic
-                )
-                return self._postprocess_answer(response[0]["generated_text"])
+            response = self.llm(
+                prompt,
+                max_new_tokens=512,
+                min_new_tokens=50,
+                num_beams=4,
+                do_sample=True,
+                temperature=0.7,
+                no_repeat_ngram_size=2
+            )
+            return self._postprocess_answer(response[0]["generated_text"])
         except Exception as e:
-                print(f"Generation error: {str(e)}")
-                return self._fallback_response(relevant_chunks)
+            print(f"Generation error: {str(e)}")
+            return self._fallback_response(context)
 
     def _clean_context(self, context: str) -> str:
-            """Remove irrelevant sections from context"""
-            lines = []
-            for line in context.split('\n'):
-                # Filter out table of contents-like entries
-                if not any(x in line for x in ['......', '....', 'CONTENTS', 'CHAPTER']):
-                    lines.append(line)
-            return '\n'.join(lines)
+        """Remove irrelevant sections from context"""
+        lines = []
+        for line in context.split('\n'):
+            # Filter out table of contents-like entries
+            if not any(x in line for x in ['......', '....', 'CONTENTS', 'CHAPTER']):
+                lines.append(line)
+        return '\n'.join(lines)
 
     def _postprocess_answer(self, answer: str) -> str:
-            """Clean up model output"""
-            # Remove repeated prompts
-            if 'Question:' in answer:
-                answer = answer.split('Question:')[0]
-            # Trim after last complete sentence
-            last_period = answer.rfind('.')
-            if last_period > 0:
-                answer = answer[:last_period+1]
-            return answer.strip()
+        """Clean up model output"""
+        # Remove repeated prompts
+        if 'Question:' in answer:
+            answer = answer.split('Question:')[0]
+        if 'Context:' in answer:
+            answer = answer.split('Context:')[0]
+        # Trim after last complete sentence
+        last_period = answer.rfind('.')
+        if last_period > 0:
+            answer = answer[:last_period+1]
+        return answer.strip()
 
-    def _fallback_response(self, chunks: list) -> str:
+    def _fallback_response(self, context: str) -> str:
         """Provide basic info when generation fails"""
-        first_chunk = context.split('\n\n')[0][:500] # Get first ~500 chars of the first chunk
-        return f"I found the following relevant information, but could not generate a structured answer:\n\n{first_chunk}"
+        if context:
+            first_chunk = context.split('\n\n')[0][:500] if context else "No relevant information found."
+            return f"I found relevant information but couldn't generate a complete answer. Here's what I found: {first_chunk}"
+        return "I couldn't find enough relevant information to answer your question. Please try rephrasing or ask about a different aspect of tuberculosis."
 
     def ask_question(self, question: str):
         """Enhanced QA pipeline with better context handling"""
         print(f"\nProcessing question: '{question}'")
         
-        # Retrieve relevant chunks with minimum score threshold
-        relevant_chunks = [c for c in self.retrieve_relevant_chunks(question) 
-                          if c['score'] > 0.5]  # Filter low-quality matches
+        try:
+            # Retrieve relevant chunks with minimum score threshold
+            relevant_chunks = [c for c in self.retrieve_relevant_chunks(question) 
+                              if c['score'] > 0.3]  # Lower threshold to get more results
+            
+            if not relevant_chunks:
+                return {
+                    "answer": "I couldn't find enough relevant information about tuberculosis to answer your question. Please try rephrasing or ask about a different aspect of tuberculosis.",
+                    "sources": [],
+                    "chunks_count": 0
+                }
+            
+            # Combine chunks into context with better organization
+            context = "MEDICAL CONTEXT ABOUT TUBERCULOSIS:\n\n"
+            context += "\n\n".join([
+                f"DOCUMENT: {chunk['source']} (Page ~{chunk['page']})\n"
+                f"CONTENT: {chunk['text']}\n"
+                for chunk in relevant_chunks
+            ])
+            
+            # Limit context to avoid truncation while keeping important info
+            max_context = 3000  # characters
+            context = context[:max_context]
+            
+            # Generate answer
+            answer = self.generate_response(question, context)
+            
+            # Prepare sources for display
+            sources = {(chunk['source'], chunk['page']) for chunk in relevant_chunks}
+            source_list = [{"document": source, "page": page} for source, page in sorted(sources)]
+            
+            print(f"Generated answer: {answer}")
+            
+            return {
+                "answer": answer.strip(),
+                "sources": source_list,
+                "chunks_count": len(relevant_chunks)
+            }
+            
+        except Exception as e:
+            print(f"Error in ask_question: {str(e)}")
+            print(traceback.format_exc())
+            return {
+                "answer": "Sorry, I encountered an error while processing your question. Please try again.",
+                "sources": [],
+                "chunks_count": 0
+            }
+
+# Initialize Flask app and chatbot
+app = Flask(__name__)
+chatbot = None
+chatbot_ready = False
+
+def initialize_chatbot():
+    """Initialize the chatbot in a separate thread to avoid blocking"""
+    global chatbot, chatbot_ready
+    try:
+        print("Initializing Tuberculosis Chatbot...")
+        chatbot = TuberculosisChatbot()
+        chatbot_ready = True
+        print("Chatbot initialized successfully!")
+    except Exception as e:
+        print(f"Error initializing chatbot: {str(e)}")
+        print(traceback.format_exc())
+        chatbot_ready = False
+
+@app.route('/')
+def home():
+    return render_template('index.html')
+
+@app.route('/ask', methods=['POST'])
+def ask_question():
+    try:
+        data = request.get_json()
+        question = data.get('question', '').strip()
         
-        if not relevant_chunks:
-            print("No high-quality matches found for this question")
-            return
+        if not question:
+            return jsonify({'error': 'Please provide a question'}), 400
         
-        #print(f"\nFound {len(relevant_chunks)} relevant chunks:")
-        #for chunk in relevant_chunks:
-        #    print(f"- From {chunk['source']} (page ~{chunk['page']}, score: {chunk['score']:.3f})")
+        if not chatbot or not chatbot_ready:
+            return jsonify({'error': 'Chatbot is still initializing. Please wait...'}), 503
         
-        # Combine chunks into context with better organization
-        context = "MEDICAL CONTEXT ABOUT TUBERCULOSIS:\n\n"
-        context += "\n\n".join([
-            f"DOCUMENT: {chunk['source']} (Page ~{chunk['page']})\n"
-            f"CONTENT: {chunk['text']}\n"
-            for chunk in relevant_chunks
-        ])
+        result = chatbot.ask_question(question)
         
-        # Limit context to avoid truncation while keeping important info
-        max_context = 4000  # characters
-        context = context[:max_context]
+        return jsonify({
+            'answer': result['answer'],
+            'sources': result['sources'],
+            'chunks_count': result['chunks_count']
+        })
         
-        # Generate answer
-        answer = self.generate_response(question, context)
-        
-        # Post-process and display results
-        print("\nDETAILED ANSWER:")
-        print(answer.strip())
-        
-        #print("\nSOURCE DOCUMENTS:")
-        #sources = {(chunk['source'], chunk['page']) for chunk in relevant_chunks}
-        #for source, page in sorted(sources):
-        #    print(f"- {source} (page ~{page})")
+    except Exception as e:
+        print(f"Error processing question: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({
+            'error': 'An error occurred while processing your question',
+            'answer': 'Sorry, I encountered a technical issue. Please try your question again.'
+        }), 500
+
+@app.route('/status')
+def status():
+    return jsonify({
+        'initialized': chatbot_ready,
+        'device': chatbot.device if chatbot else 'Not initialized'
+    })
 
 if __name__ == '__main__':
-    chatbot = TuberculosisChatbot()
+    # Initialize chatbot in background thread
+    init_thread = threading.Thread(target=initialize_chatbot)
+    init_thread.daemon = True
+    init_thread.start()
     
-    print("\nTUBERCULOSIS EXPERT CHATBOT READY")
-    print("Type 'exit' to quit\n")
-    
-    while True:
-        question = input("Your question about tuberculosis: ").strip()
-        if question.lower() in ['exit', 'quit']:
-            break
-        
-        chatbot.ask_question(question)
-        print("\n" + "="*80 + "\n")
-
-
-        
+    # Start Flask app
+    print("Starting Flask server...")
+    app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)

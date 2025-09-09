@@ -1,85 +1,107 @@
-class Chatbox {
-    constructor() {
-        this.args = {
-            chatBox: document.querySelector('.chatbox__support'),
-            sendButton: document.querySelector('.send__button'),
-            chatMessages: document.querySelector('.chatbox__messages')
-        };
+let chatbotInitialized = false;
 
-        this.state = false; // Start with chat closed
-        this.messages = [];
-    }
-
-    display() {
-        const { chatBox, sendButton } = this.args;
-
-        // Toggle chatbox visibility
-        this.state = !this.state;
-        if (this.state) {
-            chatBox.classList.add('chatbox--active');
-        } else {
-            chatBox.classList.remove('chatbox--active');
-        }
-
-        sendButton.addEventListener('click', () => this.onSendButton());
-        
-        const inputField = chatBox.querySelector('input');
-        inputField.addEventListener('keyup', ({ key }) => {
-            if (key === 'Enter') {
-                this.onSendButton();
-            }
-        });
-    }
-
-    onSendButton() {
-        const { chatBox, chatMessages } = this.args;
-        const inputField = chatBox.querySelector('input');
-        const text = inputField.value;
-
-        if (text.trim() === '') return;
-
-        // Add user message
-        this.addMessage({ name: 'User', message: text });
-        inputField.value = '';
-
-        // Send to backend
-        fetch('/predict', {
-            method: 'POST',
-            body: JSON.stringify({ message: text }),
-            headers: {
-                'Content-Type': 'application/json',
-            },
-        })
+// Check chatbot status periodically
+function checkChatbotStatus() {
+    fetch('/status')
         .then(response => response.json())
         .then(data => {
-            this.addMessage({ name: 'Sam', message: data.answer });
+            if (data.initialized) {
+                chatbotInitialized = true;
+                document.getElementById('question-input').disabled = false;
+                document.getElementById('send-btn').disabled = false;
+                document.getElementById('loading').classList.add('hidden');
+                addMessage("Chatbot is ready! Ask me anything about tuberculosis.", 'bot');
+            } else {
+                setTimeout(checkChatbotStatus, 2000);
+            }
         })
         .catch(error => {
-            console.error('Error:', error);
-            this.addMessage({ name: 'Sam', message: 'Sorry, something went wrong. Please try again.' });
+            console.error('Error checking status:', error);
+            setTimeout(checkChatbotStatus, 2000);
         });
-    }
-
-    addMessage(message) {
-        const { chatMessages } = this.args;
-        const messageElement = document.createElement('div');
-        
-        messageElement.classList.add('messages__item');
-        messageElement.classList.add(
-            message.name === 'Sam' 
-            ? 'messages__item--operator' 
-            : 'messages__item--visitor'
-        );
-        
-        messageElement.innerHTML = message.message;
-        chatMessages.appendChild(messageElement);
-        
-        // Scroll to bottom
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-    }
 }
 
-const chatbox = new Chatbox();
-document.addEventListener('DOMContentLoaded', () => {
-    chatbox.display();
+function sendQuestion() {
+    const input = document.getElementById('question-input');
+    const question = input.value.trim();
+    
+    if (!question || !chatbotInitialized) return;
+    
+    // Add user message to chat
+    addMessage(question, 'user');
+    input.value = '';
+    
+    // Show loading
+    document.getElementById('loading').classList.remove('hidden');
+    document.getElementById('sources').classList.add('hidden');
+    
+    // Send question to server
+    fetch('/ask', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ question: question })
+    })
+    .then(response => {
+        if (!response.ok) {
+            throw new Error('Network response was not ok');
+        }
+        return response.json();
+    })
+    .then(data => {
+        if (data.error) {
+            addMessage('Error: ' + data.error, 'bot');
+        } else {
+            addMessage(data.answer, 'bot');
+            if (data.sources && data.sources.length > 0) {
+                showSources(data.sources);
+            }
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        addMessage('Sorry, there was an error processing your question. Please try again.', 'bot');
+    })
+    .finally(() => {
+        document.getElementById('loading').classList.add('hidden');
+    });
+}
+
+function addMessage(text, type) {
+    const messagesContainer = document.getElementById('chat-messages');
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message ${type}-message`;
+    messageDiv.textContent = text;
+    messagesContainer.appendChild(messageDiv);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function showSources(sources) {
+    if (!sources || sources.length === 0) return;
+    
+    const sourcesContainer = document.getElementById('sources-list');
+    sourcesContainer.innerHTML = '';
+    
+    sources.forEach(source => {
+        const sourceDiv = document.createElement('div');
+        sourceDiv.className = 'source-item';
+        sourceDiv.textContent = `${source.document} (Page ~${source.page})`;
+        sourcesContainer.appendChild(sourceDiv);
+    });
+    
+    document.getElementById('sources').classList.remove('hidden');
+}
+
+// Allow pressing Enter to send message
+document.getElementById('question-input').addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') {
+        sendQuestion();
+    }
+});
+
+// Start checking chatbot status when page loads
+document.addEventListener('DOMContentLoaded', function() {
+    checkChatbotStatus();
+    addMessage("Welcome! I'm initializing the Tuberculosis Expert Chatbot. Please wait...", 'bot');
 });
